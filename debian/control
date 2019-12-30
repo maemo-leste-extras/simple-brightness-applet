@@ -1,0 +1,17 @@
+Source: simple-brightness-applet
+Section: user/desktop
+Priority: extra
+Maintainer: Faheem Pervez <trippin1@gmail.com>
+Build-Depends: debhelper (>= 5), autotools-dev, autoconf, libhildon1-dev, libhildondesktop1-dev, libgtk2.0-dev, libglib2.0-dev, libgconf2-dev, libosso-dev
+Standards-Version: 3.7.2
+
+Package: simple-brightness-applet
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Simple brightness statusarea applet
+ Allows you to:
+ * Adjust the brightness from 1-5;
+ * Launch the Display Settings Control Panel applet; and
+ * Keep the backlight on.
+ .
+XB-Maemo-Display-Name: Simple Brightness Applet

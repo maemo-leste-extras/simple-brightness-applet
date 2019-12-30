@@ -1,0 +1,5 @@
+[Desktop Entry]
+Name=Simple Brightness Applet
+Comment=Simple Brightness Applet
+Type=default
+X-Path=simple-brightness-applet.so
