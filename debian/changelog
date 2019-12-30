@@ -1,3 +1,9 @@
+simple-brightness-applet (2.0) unstable; urgency=low
+
+  * Initial Leste import
+
+ -- Merlijn wajer <merlijn@wizzup.org>  Mon, 30 Dec 2019 09:36:23 +0100
+
 simple-brightness-applet (1.1-1maemo0) unstable; urgency=low
 
   * Add ability to keep backlight on
