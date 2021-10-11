@@ -29,17 +29,14 @@
 #include <string.h>
 #include <gtk/gtk.h>
 #include <hildon/hildon.h>
-#include <gconf/gconf-client.h>
 #include <libosso.h>
+#include <mce/dbus-names.h>
 
 #ifdef HILDON_DISABLE_DEPRECATED
 #undef HILDON_DISABLE_DEPRECATED
 #endif
 
 HD_DEFINE_PLUGIN_MODULE (SimpleBrightnessApplet, simple_brightness_applet, HD_TYPE_STATUS_MENU_ITEM)
-
-#define SIMPLE_BRIGHTNESS_GCONF_PATH "/system/osso/dsm/display"
-#define BRIGHTNESS_KEY SIMPLE_BRIGHTNESS_GCONF_PATH "/display_brightness"
 
 #define SIMPLE_BRIGHTNESS_APPLET_GET_PRIVATE(obj) (G_TYPE_INSTANCE_GET_PRIVATE ((obj), \
                         SIMPLE_TYPE_BRIGHTNESS_APPLET, SimpleBrightnessAppletPrivate))
@@ -48,7 +45,7 @@ typedef struct _SimpleBrightnessAppletPrivate SimpleBrightnessAppletPrivate;
 
 struct _SimpleBrightnessAppletPrivate
 {
-    GConfClient *gconf_client;
+    GDBusConnection *bus;
     GtkHBox *applet_contents;
     HildonControlbar *brightness_ctrlbar;
     GtkWidget *settings_dialog;
@@ -57,7 +54,7 @@ struct _SimpleBrightnessAppletPrivate
 
     gulong brightness_ctrlbar_valchanged_id;
     gulong dispchkbtn_toggled_id;
-    guint gconfnotify_id;
+    guint notify_id;
     guint display_keepalive_timeout;
 
     gboolean dispchkbtn_active;
@@ -66,6 +63,89 @@ struct _SimpleBrightnessAppletPrivate
 };
 
 static void simple_brightness_applet_finalize (GObject *object);
+
+static GDBusConnection *get_dbus_connection(void)
+{
+	GError *error = NULL;
+	char *addr;
+	
+	GDBusConnection *s_bus_conn;
+
+	addr = g_dbus_address_get_for_bus_sync(G_BUS_TYPE_SYSTEM, NULL, &error);
+	if (addr == NULL) {
+		g_error("fail to get dbus addr: %s\n", error->message);
+		g_free(error);
+		return NULL;
+	}
+
+	s_bus_conn = g_dbus_connection_new_for_address_sync(addr,
+			G_DBUS_CONNECTION_FLAGS_AUTHENTICATION_CLIENT |
+			G_DBUS_CONNECTION_FLAGS_MESSAGE_BUS_CONNECTION,
+			NULL, NULL, &error);
+
+	if (s_bus_conn == NULL) {
+		g_error("fail to create dbus connection: %s\n", error->message);
+		g_free(error);
+	}
+
+	return s_bus_conn;
+}
+
+static gint32 mce_get_dbus_int(GDBusConnection *bus, const gchar *request, gint32 defval)
+{
+	GVariant *result;
+
+	GError *error = NULL;
+
+	result = g_dbus_connection_call_sync(bus, MCE_SERVICE, MCE_REQUEST_PATH,
+		MCE_REQUEST_IF, request, NULL, NULL,
+		G_DBUS_CALL_FLAGS_NONE, 2000, NULL, &error);
+	
+	if (error || !result) {
+		g_critical("%s: Can not get value for %s", __func__, request);
+		return defval;
+	}
+
+	GVariantType *int_variant = g_variant_type_new("(i)");
+
+	if (!g_variant_is_of_type(result, int_variant)) {
+		g_critical("%s: Can not get value for %s wrong type: %s instead of (i)",
+				   __func__, request, g_variant_get_type_string(result));
+		g_variant_unref(result);
+		g_variant_type_free(int_variant);
+		return defval;
+	}
+
+	g_variant_type_free(int_variant);
+
+	gint32 value;
+	g_variant_get(result, "(i)", &value);
+	g_variant_unref(result);
+	return value;
+}
+
+static gboolean mce_set_dbus_int(GDBusConnection *bus, const gchar *request, gint32 val)
+{
+	GVariant *result;
+	GVariant *param = g_variant_new("(i)", val);
+
+	GError *error = NULL;
+
+	result = g_dbus_connection_call_sync(bus, MCE_SERVICE, MCE_REQUEST_PATH,
+		MCE_REQUEST_IF, request, param, NULL,
+		G_DBUS_CALL_FLAGS_NONE, -1, NULL, &error);
+
+	g_variant_unref(param);
+	
+	if (error) {
+		g_critical("%s: Failed to send %s to mce", __func__, request);
+		return FALSE;
+	}
+
+	g_variant_unref(result);
+
+	return TRUE;
+}
 
 /* Callbacks: */
 static gboolean simple_brightness_applet_keep_backlight_alive (SimpleBrightnessApplet *plugin)
@@ -81,12 +161,32 @@ static gboolean simple_brightness_applet_keep_backlight_alive (SimpleBrightnessA
 	return TRUE;
 }
 
-static void simple_brightness_applet_on_gconf_value_changed (GConfClient *gconf_client G_GNUC_UNUSED, guint cnxn_id G_GNUC_UNUSED, GConfEntry *entry G_GNUC_UNUSED, SimpleBrightnessApplet *plugin)
+void simple_brightness_applet_brightness_changed_dbus_callback(GDBusConnection* connection,
+															   const gchar* sender_name,
+															   const gchar* object_path,
+															   const gchar* interface_name,
+															   const gchar* signal_name,
+															   GVariant* parameters,
+															   gpointer user_data)
 {
-   SimpleBrightnessAppletPrivate *priv = SIMPLE_BRIGHTNESS_APPLET_GET_PRIVATE (plugin);
+   SimpleBrightnessAppletPrivate *priv = (SimpleBrightnessAppletPrivate*)user_data;
+   
+	GVariantType *int_variant = g_variant_type_new("(i)");
+
+	if (!g_variant_is_of_type(parameters, int_variant)) {
+		g_critical("%s: Can not get value for %s wrong type: %s instead of (i)",
+					__func__, MCE_DISPLAY_BRIGTNESS_SIG, g_variant_get_type_string(parameters));
+		g_variant_type_free(int_variant);
+		return;
+	}
+
+	g_variant_type_free(int_variant);
+
+	gint32 value;
+	g_variant_get(parameters, "(i)", &value);
 
    g_signal_handler_block (priv->brightness_ctrlbar, priv->brightness_ctrlbar_valchanged_id);
-   hildon_controlbar_set_value (priv->brightness_ctrlbar, gconf_client_get_int(priv->gconf_client, BRIGHTNESS_KEY, NULL));
+   hildon_controlbar_set_value (priv->brightness_ctrlbar, value);
    g_signal_handler_unblock (priv->brightness_ctrlbar, priv->brightness_ctrlbar_valchanged_id);
 }
 
@@ -94,7 +194,7 @@ static void simple_brightness_applet_on_value_changed (HildonControlbar *brightn
 {
    SimpleBrightnessAppletPrivate *priv = SIMPLE_BRIGHTNESS_APPLET_GET_PRIVATE (plugin);
 
-   gconf_client_set_int (priv->gconf_client, BRIGHTNESS_KEY, hildon_controlbar_get_value (priv->brightness_ctrlbar), NULL);
+   mce_set_dbus_int(priv->bus, MCE_DISPLAY_BRIGTNESS_SET, hildon_controlbar_get_value (priv->brightness_ctrlbar));
 }
 
 static void simple_brightness_applet_on_settings_button_clicked (GtkWidget *button, SimpleBrightnessApplet *plugin)
@@ -233,13 +333,14 @@ static void simple_brightness_applet_setup (SimpleBrightnessApplet *plugin)
 
    priv->brightness_ctrlbar = HILDON_CONTROLBAR (hildon_controlbar_new ()); /* Yes, I know: I'm very naughty for using a depreciated widget. But let me know, Nokia, when you actually stop using it too. */
    hildon_gtk_widget_set_theme_size(GTK_WIDGET(priv->brightness_ctrlbar), HILDON_SIZE_FINGER_HEIGHT | HILDON_SIZE_AUTO_WIDTH);
-   hildon_controlbar_set_range (priv->brightness_ctrlbar, gconf_client_get_int(priv->gconf_client, "/system/osso/dsm/display/display_brightness_level_step", NULL), gconf_client_get_int(priv->gconf_client, "/system/osso/dsm/display/max_display_brightness_levels", NULL));
-   hildon_controlbar_set_value (priv->brightness_ctrlbar, gconf_client_get_int(priv->gconf_client, BRIGHTNESS_KEY, NULL));
+   hildon_controlbar_set_range (priv->brightness_ctrlbar, MCE_DISPLAY_BRIGHTNESS_STEP, MCE_DISPLAY_BRIGHTNESS_LEVELS);
+   hildon_controlbar_set_value (priv->brightness_ctrlbar, mce_get_dbus_int(priv->bus, MCE_DISPLAY_BRIGTNESS_GET, 1));
    priv->brightness_ctrlbar_valchanged_id = g_signal_connect (priv->brightness_ctrlbar, "value-changed", G_CALLBACK(simple_brightness_applet_on_value_changed), plugin);
    gtk_box_pack_start (GTK_BOX (priv->applet_contents), GTK_WIDGET (priv->brightness_ctrlbar), TRUE, TRUE, 0);
 
-   gconf_client_add_dir (priv->gconf_client, SIMPLE_BRIGHTNESS_GCONF_PATH, GCONF_CLIENT_PRELOAD_NONE, NULL);
-   priv->gconfnotify_id = gconf_client_notify_add (priv->gconf_client, BRIGHTNESS_KEY, (GConfClientNotifyFunc)simple_brightness_applet_on_gconf_value_changed, plugin, NULL, NULL);
+   priv->notify_id = g_dbus_connection_signal_subscribe(priv->bus, MCE_SERVICE, MCE_SIGNAL_IF, MCE_DISPLAY_BRIGTNESS_SIG,
+														NULL, NULL, G_DBUS_SIGNAL_FLAGS_NONE, 
+														&simple_brightness_applet_brightness_changed_dbus_callback, priv, NULL);
 }
 
 /* GObject stuff: */
@@ -263,8 +364,12 @@ static void simple_brightness_applet_init (SimpleBrightnessApplet *plugin)
 
    priv->dispchkbtn_active = FALSE;
    priv->osso_context = osso_initialize(PACKAGE, PACKAGE_VERSION, TRUE, NULL);
-   priv->brightness_ctrlbar_valchanged_id = priv->dispchkbtn_toggled_id = priv->gconfnotify_id = priv->display_keepalive_timeout = 0;
-   priv->gconf_client = gconf_client_get_default ();
+   priv->notify_id = 0;
+   priv->brightness_ctrlbar_valchanged_id = 0;
+   priv->dispchkbtn_toggled_id = 0;
+   priv->display_keepalive_timeout = 0;
+   priv->bus = get_dbus_connection();
+   g_assert(priv->bus);
 
    simple_brightness_applet_setup (plugin);
    gtk_container_add (GTK_CONTAINER (plugin), GTK_WIDGET(priv->applet_contents));
@@ -293,19 +398,17 @@ static void simple_brightness_applet_finalize (GObject *object)
 	g_source_remove(priv->display_keepalive_timeout);
 	priv->display_keepalive_timeout = 0;
    }
-
-   if (priv->gconfnotify_id != 0)
+   
+   if (priv->notify_id)
    {
-   	gconf_client_notify_remove (priv->gconf_client, priv->gconfnotify_id);
-   	priv->gconfnotify_id = 0;
-	gconf_client_remove_dir (priv->gconf_client, SIMPLE_BRIGHTNESS_GCONF_PATH, NULL);
+	g_dbus_connection_signal_unsubscribe(priv->bus, priv->notify_id);
+	priv->notify_id = 0;
    }
 
-   if (priv->gconf_client)
+   if (priv->bus)
    {
-   	gconf_client_clear_cache (priv->gconf_client);
-   	g_object_unref (priv->gconf_client);
-   	priv->gconf_client = NULL;
+	g_object_unref(priv->bus);
+	priv->bus = NULL;
    }
 
    if (priv->osso_context)
