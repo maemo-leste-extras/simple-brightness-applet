@@ -8,7 +8,7 @@ AC_PROG_CC
 AC_PROG_INSTALL
 AM_PROG_LIBTOOL
 
-PKG_CHECK_MODULES(BRIGHTNESS, hildon-1 libhildondesktop-1 gtk+-2.0 glib-2.0 gobject-2.0 gconf-2.0 libosso)
+PKG_CHECK_MODULES(BRIGHTNESS, hildon-1 libhildondesktop-1 gtk+-2.0 glib-2.0 gobject-2.0 mce libosso)
 AC_SUBST(BRIGHTNESS_CFLAGS)
 AC_SUBST(BRIGHTNESS_LIBS)
 
